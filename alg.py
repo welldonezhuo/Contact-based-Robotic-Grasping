@@ -122,9 +122,31 @@ def sample_stable_grasp(mesh, thresh=0.0):
                     expected to be larger than thresh.
     """
     ########## TODO ##########
-    grasp = None
-    Q = -np.inf
+    n_faces = len(mesh.faces)
+    max_tries = 10000
 
+    best_grasp = None
+    best_Q = -np.inf
+
+    for i in range(max_tries):
+        # randomly sample a 3-contact grasp without replacement
+        grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
+
+        # evaluate the grasp quality
+        Q = eval_Q(mesh, grasp)
+
+        # keep the best sampled grasp so far
+        if Q > best_Q:
+            best_Q = Q
+            best_grasp = grasp
+
+        # return immediately once a stable grasp is found
+        if Q > thresh:
+            return grasp, Q
+
+    # if no stable grasp is found within max_tries,
+    # return the best sampled grasp
+    return best_grasp, best_Q
 
     ##########################
     return grasp, Q
