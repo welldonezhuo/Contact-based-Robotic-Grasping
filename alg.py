@@ -22,9 +22,45 @@ def primitive_wrenches(mesh, grasp, mu=0.2, n_edges=8):
                   Type: numpy.ndarray of shape (len(grasp) * n_edges, 6)
     """
     ########## TODO ##########
-    W = np.zeros(shape=(len(grasp) * n_edges, 6))
-    
 
+    W = np.zeros((len(grasp) * n_edges, 6))
+
+    # Contact points are the centroids of the contacted mesh triangles.
+    contact_pts = utils.get_centroid_of_triangles(mesh, grasp)
+
+    # Use the outward face normals at the contacted triangles.
+    normals = mesh.face_normals[grasp]
+
+    for i, (p, n) in enumerate(zip(contact_pts, normals)):
+        # Normalize the normal vector.
+        n = n / np.linalg.norm(n)
+
+        # Build a local tangent basis {t1, t2} orthogonal to n.
+        ref = np.array([1.0, 0.0, 0.0])
+        if abs(np.dot(ref, n)) > 0.9:
+            ref = np.array([0.0, 1.0, 0.0])
+
+        t1 = np.cross(n, ref)
+        t1 = t1 / np.linalg.norm(t1)
+        t2 = np.cross(n, t1)
+        t2 = t2 / np.linalg.norm(t2)
+
+        for k in range(n_edges):
+            # Uniformly discretize the friction cone into n_edges directions.
+            theta = 2.0 * np.pi * k / n_edges
+            tangent = np.cos(theta) * t1 + np.sin(theta) * t2
+
+            # Compute the primitive contact force.
+            f = n + mu * tangent
+
+            # Compute the corresponding torque about the mesh center of mass.
+            tau = np.cross(p - mesh.center_mass, f)
+
+            # Save the 6D wrench [force, torque].
+            row = i * n_edges + k
+            W[row, :3] = f
+            W[row, 3:] = tau
+            
     ##########################
     return W
 
