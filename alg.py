@@ -60,7 +60,7 @@ def primitive_wrenches(mesh, grasp, mu=0.2, n_edges=8):
             row = i * n_edges + k
             W[row, :3] = f
             W[row, 3:] = tau
-            
+
     ##########################
     return W
 
@@ -85,6 +85,23 @@ def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=1.0):
     ########## TODO ##########
     Q = -np.inf
 
+    # get primitive wrenches from Task 1
+    W = primitive_wrenches(mesh, grasp, mu=mu, n_edges=n_edges).copy()
+
+    # scale the torque part in the wrench space
+    W[:, 3:] *= lmbd
+
+    # construct the convex hull of primitive wrenches
+    hull = scipy.spatial.ConvexHull(W)
+
+    # each hyperplane equation is [a, b], representing a^T x + b = 0
+    # the signed distance from the origin to this hyperplane is -b / ||a||
+    Q = np.inf
+    for eq in hull.equations:
+        a = eq[:-1]
+        b = eq[-1]
+        dist = -b / np.linalg.norm(a)
+        Q = min(Q, dist)
 
     ##########################
     return Q
