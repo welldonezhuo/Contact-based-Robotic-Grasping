@@ -67,7 +67,7 @@ def primitive_wrenches(mesh, grasp, mu=0.2, n_edges=8):
 
 ########## Task 2: Grasp Quality Evaluation ##########
 
-def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=0.3):
+def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=1):
     """
     Evaluate the L1 quality of a grasp.
     args:   mesh: The object mesh model.
@@ -127,33 +127,25 @@ def sample_stable_grasp(mesh, thresh=0.0):
                     expected to be larger than thresh.
     """
     ########## TODO ##########
+    grasp = None
+    Q = -np.inf
+
     n_faces = len(mesh.faces)
-    max_tries = 10000
+    # max_trials = 5000
 
-    best_grasp = None
-    best_Q = -np.inf
+    # for _ in range(max_trials):
+    #     grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
+    #     Q = eval_Q(mesh, grasp)
 
-    for i in range(max_tries):
-        # randomly sample a 3-contact grasp without replacement
+    #     if Q > thresh:
+    #         return grasp, Q
+
+    while True:
         grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
-
-        # evaluate the grasp quality
         Q = eval_Q(mesh, grasp)
-
-        # keep the best sampled grasp so far
-        if Q > best_Q:
-            best_Q = Q
-            best_grasp = grasp
-
-        # return immediately once a stable grasp is found
         if Q > thresh:
             return grasp, Q
-
-    # if no stable grasp is found within max_tries,
-    # return the best sampled grasp
-    return best_grasp, best_Q
-
-    ##########################
+    #########################
     return grasp, Q
 
 
