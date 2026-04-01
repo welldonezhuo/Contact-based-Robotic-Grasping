@@ -281,6 +281,7 @@ def optimize_grasp(mesh, grasp):
 
 ########## Task 5: Grasp Optimization with Reachability ##########
 
+
 def optimize_reachable_grasp(mesh, r=0.5):
     """
     Sample a reachable grasp and optimize it.
@@ -288,7 +289,7 @@ def optimize_reachable_grasp(mesh, r=0.5):
                    Type: trimesh.base.Trimesh
                 r: The reachability measure. (default: 0.5)
     returns: traj: The trajectory of the grasp optimization.
-                   Type: list of grasp (each grasp is a list of int) 
+                   Type: list of grasp (each grasp is a list of int)
     """
     traj = []
     ########## TODO ##########
@@ -296,84 +297,117 @@ def optimize_reachable_grasp(mesh, r=0.5):
     n_faces = len(mesh.faces)
     centroids = utils.get_centroid_of_triangles(mesh, list(range(n_faces)))
 
-    def reachable(grasp):
+    def avg_dist_of_grasp(grasp):
         pts = centroids[list(grasp)]
         psi = np.mean(pts, axis=0)
-        avg_dist = np.mean(np.linalg.norm(pts - psi, axis=1))
-        # delete later if you want
-        print("grasp:", grasp, "avg_dist:", avg_dist)
-        return avg_dist < r
+        return np.mean(np.linalg.norm(pts - psi, axis=1))
 
-    # Step 1: sample an initial reachable grasp
-    max_tries = 10000
-    best_grasp = None
-    best_Q = -np.inf
+    def reachable(grasp):
+        return avg_dist_of_grasp(grasp) < r
 
-    for _ in range(max_tries):
-        grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
+    def constrained_local_optimize(start_grasp, eta=1):
+        current_grasp = list(start_grasp)
+        current_Q = eval_Q(mesh, current_grasp)
+        local_traj = [list(current_grasp)]
+        q_cache = {tuple(current_grasp): current_Q}
 
-        if not reachable(grasp):
+        while True:
+            neighbor_lists = []
+            for g in current_grasp:
+                nbrs = find_neighbors(mesh, g, eta=eta)
+                nbrs = list(set(nbrs + [g]))
+                neighbor_lists.append(nbrs)
+
+            next_grasp = list(current_grasp)
+            next_Q = current_Q
+
+            for candidate in it.product(*neighbor_lists):
+                if len(set(candidate)) < 3:
+                    continue
+
+                if not reachable(candidate):
+                    continue
+
+                key = tuple(candidate)
+                if key in q_cache:
+                    Q = q_cache[key]
+                else:
+                    Q = eval_Q(mesh, list(candidate))
+                    q_cache[key] = Q
+
+                if Q > next_Q:
+                    next_Q = Q
+                    next_grasp = list(candidate)
+
+            if next_Q <= current_Q:
+                break
+
+            local_traj.append(next_grasp)
+            current_grasp = next_grasp
+            current_Q = next_Q
+
+        return local_traj, current_Q
+
+    # -------- multi-start sampling --------
+    num_starts = 30
+    max_sample_tries = 5000
+
+    candidate_starts = []
+    seen = set()
+
+    tries = 0
+    while len(candidate_starts) < num_starts and tries < max_sample_tries:
+        grasp = tuple(np.random.choice(
+            n_faces, size=3, replace=False).tolist())
+        tries += 1
+
+        if grasp in seen:
             continue
+        seen.add(grasp)
 
-        Q = eval_Q(mesh, grasp)
+        if reachable(grasp):
+            candidate_starts.append(list(grasp))
 
-        if Q > best_Q:
-            best_grasp = grasp
-            best_Q = Q
-
-        if Q > 0.0:
-            break
-
-    # fallback: if no reachable grasp was accepted above
-    if best_grasp is None:
+    # fallback: guarantee at least one reachable start
+    if len(candidate_starts) == 0:
         while True:
             grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
             if reachable(grasp):
-                best_grasp = grasp
-                best_Q = eval_Q(mesh, grasp)
+                candidate_starts.append(grasp)
                 break
 
-    # Step 2: optimize while keeping only reachable neighbors
-    traj = [best_grasp]
-    current_grasp = best_grasp
-    current_Q = best_Q
-    q_cache = {tuple(current_grasp): current_Q}
+    best_traj = None
+    best_Q = -np.inf
 
-    while True:
-        neighbor_lists = []
-        for g in current_grasp:
-            nbrs = find_neighbors(mesh, g, eta=1)
-            nbrs.append(g)
-            neighbor_lists.append(nbrs)
+    # first pass: eta = 1
+    for start_grasp in candidate_starts:
+        local_traj, final_Q = constrained_local_optimize(start_grasp, eta=1)
+        if final_Q > best_Q:
+            best_Q = final_Q
+            best_traj = local_traj
 
-        next_grasp = current_grasp
-        next_Q = current_Q
+    # second pass: if result is still weak, try slightly larger neighborhood
+    if best_Q <= 0.0:
+        for start_grasp in candidate_starts:
+            local_traj, final_Q = constrained_local_optimize(
+                start_grasp, eta=2)
+            if final_Q > best_Q:
+                best_Q = final_Q
+                best_traj = local_traj
 
-        for candidate in it.product(*neighbor_lists):
-            if len(set(candidate)) < len(candidate):
-                continue
+    traj = best_traj
 
-            if not reachable(candidate):
-                continue
-
-            candidate_key = tuple(candidate)
-            if candidate_key in q_cache:
-                Q = q_cache[candidate_key]
-            else:
-                Q = eval_Q(mesh, list(candidate))
-                q_cache[candidate_key] = Q
-
-            if Q > next_Q:
-                next_Q = Q
-                next_grasp = list(candidate)
-
-        if next_Q <= current_Q:
-            break
-
-        traj.append(next_grasp)
-        current_grasp = next_grasp
-        current_Q = next_Q
+    # only print avg_dist for grasps that are actually in the final trajectory
+    print("Reachability check on final trajectory:")
+    all_ok = True
+    for i, grasp in enumerate(traj):
+        avg_dist = avg_dist_of_grasp(grasp)
+        ok = avg_dist < r
+        print(
+            f"step {i}: grasp = {grasp}, avg_dist = {avg_dist:.6f}, < r ? {ok}")
+        if not ok:
+            all_ok = False
+    print("All grasps satisfy reachability constraint:", all_ok)
 
     ##########################
-
     return traj
