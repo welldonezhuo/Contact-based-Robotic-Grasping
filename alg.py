@@ -67,7 +67,7 @@ def primitive_wrenches(mesh, grasp, mu=0.2, n_edges=8):
 
 ########## Task 2: Grasp Quality Evaluation ##########
 
-def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=1.0):
+def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=0.3):
     """
     Evaluate the L1 quality of a grasp.
     args:   mesh: The object mesh model.
@@ -83,6 +83,11 @@ def eval_Q(mesh, grasp, mu=0.2, n_edges=8, lmbd=1.0):
     returns:   Q: The L1 quality score of the given grasp.
     """
     ########## TODO ##########
+
+    if not hasattr(eval_Q, "count"):
+        eval_Q.count = 0
+    eval_Q.count += 1
+
     Q = -np.inf
 
     # get primitive wrenches from Task 1
@@ -169,10 +174,38 @@ def find_neighbors(mesh, tr_id, eta=1):
     ########## TODO ##########
     nbr_ids = []
 
+    # build adjacency list once and cache it on the function
+    if not hasattr(find_neighbors, "adj_map"):
+        adj_map = {}
+        for a, b in mesh.face_adjacency:
+            if a not in adj_map:
+                adj_map[a] = []
+            if b not in adj_map:
+                adj_map[b] = []
+            adj_map[a].append(b)
+            adj_map[b].append(a)
+        find_neighbors.adj_map = adj_map
 
+    adj_map = find_neighbors.adj_map
 
-    ##########################
+    visited = set([tr_id])
+    current = set([tr_id])
+
+    for _ in range(eta):
+        next_level = set()
+        for f in current:
+            for nb in adj_map.get(f, []):
+                if nb not in visited:
+                    next_level.add(nb)
+        visited.update(next_level)
+        current = next_level
+
+    visited.discard(tr_id)
+    nbr_ids = list(visited)
+
+    #####################
     return nbr_ids
+
 
 def local_optimal(mesh, grasp):
     """
@@ -185,13 +218,42 @@ def local_optimal(mesh, grasp):
                     Type: list of int
              Q_max: The L1 quality score of G_opt.
     """
-    ########## TODO ##########
-    G_opt = None
-    Q_max = -np.inf
 
+    ########## TODO ##########
+    G_opt = grasp
+    Q_max = eval_Q(mesh, grasp)
+
+    # cache for eval_Q results
+    if not hasattr(local_optimal, "q_cache"):
+        local_optimal.q_cache = {}
+
+    neighbor_lists = []
+
+    for g in grasp:
+        nbrs = find_neighbors(mesh, g, eta=1)
+        nbrs.append(g)
+        neighbor_lists.append(nbrs)
+
+    for candidate in it.product(*neighbor_lists):
+        candidate = tuple(candidate)
+
+        if len(set(candidate)) < len(candidate):
+            continue
+
+        # use cache
+        if candidate in local_optimal.q_cache:
+            Q = local_optimal.q_cache[candidate]
+        else:
+            Q = eval_Q(mesh, list(candidate))
+            local_optimal.q_cache[candidate] = Q
+
+        if Q > Q_max:
+            Q_max = Q
+            G_opt = list(candidate)
 
     ##########################
     return G_opt, Q_max
+
 
 def optimize_grasp(mesh, grasp):
     """
@@ -205,7 +267,21 @@ def optimize_grasp(mesh, grasp):
     """
     traj = []
     ########## TODO ##########
-   
+
+    traj = [grasp]
+
+    current_grasp = grasp
+    current_Q = eval_Q(mesh, current_grasp)
+
+    while True:
+        new_grasp, new_Q = local_optimal(mesh, current_grasp)
+
+        if new_Q <= current_Q:
+            break
+
+        traj.append(new_grasp)
+        current_grasp = new_grasp
+        current_Q = new_Q
 
     ##########################
     return traj
@@ -224,7 +300,88 @@ def optimize_reachable_grasp(mesh, r=0.5):
     """
     traj = []
     ########## TODO ##########
-   
+
+    n_faces = len(mesh.faces)
+    centroids = utils.get_centroid_of_triangles(mesh, list(range(n_faces)))
+
+    def reachable(grasp):
+        pts = centroids[list(grasp)]
+        psi = np.mean(pts, axis=0)
+        avg_dist = np.mean(np.linalg.norm(pts - psi, axis=1))
+        # delete later if you want
+        print("grasp:", grasp, "avg_dist:", avg_dist)
+        return avg_dist < r
+
+    # Step 1: sample an initial reachable grasp
+    max_tries = 10000
+    best_grasp = None
+    best_Q = -np.inf
+
+    for _ in range(max_tries):
+        grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
+
+        if not reachable(grasp):
+            continue
+
+        Q = eval_Q(mesh, grasp)
+
+        if Q > best_Q:
+            best_grasp = grasp
+            best_Q = Q
+
+        if Q > 0.0:
+            break
+
+    # fallback: if no reachable grasp was accepted above
+    if best_grasp is None:
+        while True:
+            grasp = np.random.choice(n_faces, size=3, replace=False).tolist()
+            if reachable(grasp):
+                best_grasp = grasp
+                best_Q = eval_Q(mesh, grasp)
+                break
+
+    # Step 2: optimize while keeping only reachable neighbors
+    traj = [best_grasp]
+    current_grasp = best_grasp
+    current_Q = best_Q
+    q_cache = {tuple(current_grasp): current_Q}
+
+    while True:
+        neighbor_lists = []
+        for g in current_grasp:
+            nbrs = find_neighbors(mesh, g, eta=1)
+            nbrs.append(g)
+            neighbor_lists.append(nbrs)
+
+        next_grasp = current_grasp
+        next_Q = current_Q
+
+        for candidate in it.product(*neighbor_lists):
+            if len(set(candidate)) < len(candidate):
+                continue
+
+            if not reachable(candidate):
+                continue
+
+            candidate_key = tuple(candidate)
+            if candidate_key in q_cache:
+                Q = q_cache[candidate_key]
+            else:
+                Q = eval_Q(mesh, list(candidate))
+                q_cache[candidate_key] = Q
+
+            if Q > next_Q:
+                next_Q = Q
+                next_grasp = list(candidate)
+
+        if next_Q <= current_Q:
+            break
+
+        traj.append(next_grasp)
+        current_grasp = next_grasp
+        current_Q = next_Q
 
     ##########################
+
     return traj
